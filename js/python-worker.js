@@ -230,6 +230,11 @@ async function ensurePackages(packages = []) {
   postStatus("loading", `Loading ${needed.join(", ")}…`);
   await pyodide.loadPackage(needed);
   needed.forEach((p) => loadedPackages.add(p));
+  if (needed.includes("matplotlib") || loadedPackages.has("matplotlib")) {
+    try {
+      await pyodide.runPythonAsync("import matplotlib\nmatplotlib.use('Agg')\n");
+    } catch (e) { /* backend may already be set */ }
+  }
 }
 
 function detectPackages(code, requested) {
@@ -259,6 +264,8 @@ if hasattr(_default_turtle, "t"):
 _html_preview = None
 _game["active"] = False
 try:
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     plt.close("all")
 except Exception:
