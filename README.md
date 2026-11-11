@@ -6,6 +6,15 @@ A free, installable Python practice app. Lessons, coding challenges with automat
 
 **Live site:** https://lhymite36-bot.github.io/ped-thon/
 
+## Android APK preview
+
+A signed preview APK (not marked Latest) is here:
+
+- Release page: https://github.com/lhymite36-bot/ped-thon/releases/tag/v0.1.0-android
+- APK: https://github.com/lhymite36-bot/ped-thon/releases/download/v0.1.0-android/Ped-thon-android-preview.apk
+
+It is a Trusted Web Activity wrapper of the live site. Android 7.0+ and Chrome are required. Allow installs from this source if the phone asks. The first launch may briefly show a browser bar until Digital Asset Links are recognized.
+
 ## Install it on your phone
 
 Ped-thon is a Progressive Web App. On a Samsung phone in Chrome:
