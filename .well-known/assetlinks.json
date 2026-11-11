@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "io.github.lhymite36bot.pedthon",
+      "sha256_cert_fingerprints": [
+        "41:50:E9:C1:33:DA:E2:F8:84:D9:98:AF:26:06:39:EE:8D:83:B3:09:28:C0:00:90:C9:C6:E3:1A:86:E3:8F:24"
+      ]
+    }
+  }
+]
