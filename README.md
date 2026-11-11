@@ -28,11 +28,18 @@ On a computer, look for the install icon in Chrome’s address bar.
 
 ## What’s inside
 
-- **12 modules** from `print` and variables through functions, files, comprehensions, and OOP, ending with NumPy and Pandas basics.
-- **49 lesson challenges** plus a rotating daily challenge and a 5-question quiz each day.
+- **20 modules** in three tracks: Beginner, Intermediate, and Advanced. Switch the track on Home, Learn, Daily, or Settings.
+- **97 lesson challenges** (49 core + 48 Advanced). Advanced covers recursion, algorithms, generators and decorators, OOP design, regex, data structures, NumPy/Pandas analysis, and LeetCode-style puzzles. Hidden tests check your answers.
+- A rotating daily challenge and a 5-question quiz each day, matched to your difficulty.
+- A **Preview** tab for visual output: matplotlib charts, turtle-style drawings, HTML/CSS/JS in a sandboxed iframe, and simple canvas games with an on-screen pad. The **Build** section has a chart dashboard, drawing art, a mini website, Snake, and Pong.
 - A mobile-friendly editor with autocomplete (keywords, builtins, snippets, your own names, and members after a dot). After Python loads, Jedi can improve the suggestions.
+- Python runs in a Web Worker (so you can Stop a runaway loop). The runtime is self-hosted, with CDN fallbacks and a Retry button if the first load fails.
 - Progress, XP, and a streak saved on the device (localStorage).
 - An optional Gemini tutor: paste your own API key in Settings. The key never leaves the device except to call Google. The app works fully without a key.
+
+## If Python fails to load on your phone
+
+The first version could show *TypeError: Failed to fetch dynamically imported module* (especially in Chrome or the installed app on a Samsung phone). Close Ped-thon completely and open it again so it can update. If you still see the error, tap **Retry**. If that is not enough: in Chrome, open the site → ⋮ → Site settings (or Settings → Site settings) → Clear & reset, then reopen the app and wait for Python to finish loading once.
 
 ## Privacy
 

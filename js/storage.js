@@ -47,11 +47,12 @@ export function saveProgress(p) {
 export function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return { name: "", geminiKey: "" };
+    if (!raw) return { name: "", geminiKey: "", difficulty: "beginner" };
     const s = JSON.parse(raw);
-    return { name: s.name || "", geminiKey: s.geminiKey || "" };
+    const difficulty = ["beginner", "intermediate", "advanced"].includes(s.difficulty) ? s.difficulty : "beginner";
+    return { name: s.name || "", geminiKey: s.geminiKey || "", difficulty };
   } catch {
-    return { name: "", geminiKey: "" };
+    return { name: "", geminiKey: "", difficulty: "beginner" };
   }
 }
 

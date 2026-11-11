@@ -7,6 +7,7 @@ import {
   challengeIdsFor,
 } from "./curriculum.js";
 import { getDailyChallenge, getDailyQuiz } from "./daily.js";
+import { buildProjects, getBuildProject } from "./build-projects.js";
 import * as store from "./storage.js";
 import { mountEditor } from "./editor.js";
 import {
@@ -15,12 +16,18 @@ import {
   runStudentCode,
   runPlayground,
   initJedi,
+  retryPython,
+  stopPython,
+  tickGame,
 } from "./python.js";
 import { hasApiKey, explainError, giveHint } from "./ai.js";
+import { hasVisual, renderPreview, mountGame } from "./visual.js";
 
 const appEl = () => document.getElementById("app");
 let editor = null;
 let deferredPrompt = null;
+let stopGameFn = null;
+let runLock = false;
 
 function refreshPills() {
   const p = store.loadProgress();
@@ -97,6 +104,130 @@ function displayName() {
   return (store.loadSettings().name || "").trim();
 }
 
+
+const DIFF_LABELS = { beginner: "Beginner", intermediate: "Intermediate", advanced: "Advanced" };
+
+function currentDifficulty() {
+  return store.loadSettings().difficulty || "beginner";
+}
+
+function setDifficulty(level) {
+  if (!DIFF_LABELS[level]) return currentDifficulty();
+  store.saveSettings({ difficulty: level });
+  return level;
+}
+
+function modulesForDifficulty(d = currentDifficulty()) {
+  return modules.filter((m) => (m.level || "beginner") === d);
+}
+
+function difficultySwitcherHtml() {
+  const d = currentDifficulty();
+  return `<div class="diff-switch" role="group" aria-label="Difficulty">
+    ${Object.entries(DIFF_LABELS).map(([k, label]) =>
+      `<button type="button" data-diff="${k}" class="${d === k ? "on" : ""}">${label}</button>`
+    ).join("")}
+  </div>`;
+}
+
+function bindDifficultySwitcher(root, onChange) {
+  root.querySelectorAll(".diff-switch [data-diff]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setDifficulty(btn.dataset.diff);
+      onChange();
+    });
+  });
+}
+
+function outputTabsHtml() {
+  return `
+    <div class="out-tabs" role="tablist">
+      <button type="button" class="out-tab on" data-tab="output">Output</button>
+      <button type="button" class="out-tab" data-tab="preview">Preview</button>
+    </div>
+    <div class="output empty" id="output">Output will show up here.</div>
+    <div class="preview-panel hidden" id="preview"></div>
+  `;
+}
+
+function bindOutputTabs(scope = document) {
+  const tabs = scope.querySelectorAll(".out-tab");
+  const out = scope.querySelector("#output");
+  const prev = scope.querySelector("#preview");
+  tabs.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      tabs.forEach((b) => b.classList.toggle("on", b === btn));
+      const tab = btn.dataset.tab;
+      out?.classList.toggle("hidden", tab !== "output");
+      prev?.classList.toggle("hidden", tab !== "preview");
+    });
+  });
+}
+
+function stopActiveGame() {
+  if (stopGameFn) {
+    try { stopGameFn(); } catch { /* ignore */ }
+    stopGameFn = null;
+  }
+}
+
+function showVisual(run, { focusIfVisual = true } = {}) {
+  const panel = document.getElementById("preview");
+  if (!panel) return;
+  renderPreview(panel, run?.preview, {
+    stopGame: stopActiveGame,
+    onNeedGame: (game, p) => {
+      stopActiveGame();
+      stopGameFn = mountGame(p, game, {
+        tick: (payload) => tickGame(payload),
+      });
+    },
+  });
+  if (focusIfVisual && hasVisual(run?.preview)) {
+    document.querySelector('.out-tab[data-tab="preview"]')?.click();
+  }
+}
+
+function fillTextOutput(out, run, { checking } = {}) {
+  if (!out) return;
+  out.classList.remove("hidden");
+  if (run?.error) {
+    out.className = "output err";
+    out.textContent = (run.traceback || run.error || "").trim();
+  } else if ((run?.stdout || "").length) {
+    out.className = "output";
+    out.textContent = run.stdout;
+  } else {
+    out.className = "output empty";
+    out.textContent = checking ? "The program ran, but printed nothing." : "The program ran, but printed nothing.";
+  }
+}
+
+async function withRunLock(fn) {
+  if (runLock) return;
+  runLock = true;
+  const runBtn = document.getElementById("btn-run");
+  const checkBtn = document.getElementById("btn-check");
+  const stopBtn = document.getElementById("btn-stop");
+  if (runBtn) runBtn.disabled = true;
+  if (checkBtn) checkBtn.disabled = true;
+  stopBtn?.classList.remove("hidden");
+  const onStop = () => {
+    stopPython().then(() => initPython().then(() => initJedi().catch(() => {})).catch(() => {}));
+  };
+  stopBtn?.addEventListener("click", onStop);
+  try {
+    await fn();
+  } finally {
+    stopBtn?.removeEventListener("click", onStop);
+    stopBtn?.classList.add("hidden");
+    if (runBtn) runBtn.disabled = false;
+    if (checkBtn) checkBtn.disabled = false;
+    runLock = false;
+  }
+}
+
+
 function casesOf(challenge) {
   if (challenge.cases && challenge.cases.length) return challenge.cases;
   return [{ inputs: challenge.inputs || [], checks: challenge.checks || [] }];
@@ -109,7 +240,9 @@ function moduleProgress(mod) {
 }
 
 function nextRecommended() {
-  for (const mod of modules) {
+  const preferred = modulesForDifficulty();
+  const order = [...preferred, ...modules.filter((m) => !preferred.includes(m))];
+  for (const mod of order) {
     const { done, total } = moduleProgress(mod);
     if (done < total) {
       const ch = mod.challenges.find((c) => !store.isComplete(c.id));
@@ -135,6 +268,7 @@ function renderHome(root) {
     ${installBannerHtml()}
     <h1>${hello}</h1>
     <p class="muted">Ped-thon is your Python practice gym. A little every day goes a long way.</p>
+    ${difficultySwitcherHtml()}
     <div class="hero-stats">
       <div class="stat"><b>${p.xp || 0}</b><span>XP</span></div>
       <div class="stat"><b>${p.streak || 0}</b><span>Day streak</span></div>
@@ -157,33 +291,43 @@ function renderHome(root) {
     </a>
     <div class="grid-2">
       <a class="card" href="#/playground" style="text-decoration:none;color:inherit"><h3>Playground</h3><p class="muted" style="margin:0">Free coding, no tests.</p></a>
-      <a class="card" href="#/review" style="text-decoration:none;color:inherit"><h3>Review</h3><p class="muted" style="margin:0">${store.getOpenMistakes().length} open mistake${store.getOpenMistakes().length === 1 ? "" : "s"}.</p></a>
+      <a class="card" href="#/build" style="text-decoration:none;color:inherit"><h3>Build</h3><p class="muted" style="margin:0">Charts, drawings, a mini website, and games.</p></a>
     </div>
+    <a class="card" href="#/review" style="display:block;text-decoration:none;color:inherit;margin-top:10px"><h3>Review</h3><p class="muted" style="margin:0">${store.getOpenMistakes().length} open mistake${store.getOpenMistakes().length === 1 ? "" : "s"}.</p></a>
   `;
   bindInstall();
+  bindDifficultySwitcher(root, () => renderHome(root));
 }
 
 function renderLearn(root) {
   setNav("learn");
+  const d = currentDifficulty();
+  const list = modulesForDifficulty(d);
   root.innerHTML = `
     <h1>Learn</h1>
-    <p class="muted">Twelve modules, from the first print to a taste of NumPy and Pandas. Jump around whenever you like.</p>
+    <p class="muted">Pick a track. Beginner covers the first ideas, Intermediate goes deeper, and Advanced is a harder practice path with 40+ challenges.</p>
+    ${difficultySwitcherHtml()}
+    <a class="card" href="#/build" style="display:block;text-decoration:none;color:inherit;margin-bottom:12px">
+      <h3>Build</h3>
+      <p class="muted" style="margin:0">Visual projects: charts, turtle art, a mini website, Snake and Pong.</p>
+    </a>
     <div class="module-list">
-      ${modules.map((m, i) => {
+      ${list.length ? list.map((m, i) => {
         const { done, total } = moduleProgress(m);
         const pct = total ? Math.round((done / total) * 100) : 0;
         return `<a class="module-item" href="#/lesson/${m.id}">
           <div class="mod-icon">${m.icon || "📘"}</div>
           <div class="grow">
             <strong>${i + 1}. ${escapeHtml(m.title)}</strong>
-            <div class="mod-meta">${escapeHtml(m.subtitle || "")} · ${done}/${total}</div>
+            <div class="mod-meta">${escapeHtml(m.subtitle || "")} · ${done}/${total}<span class="level-pill">${escapeHtml(DIFF_LABELS[m.level || "beginner"])}</span></div>
             <div class="progress-bar" style="margin-top:8px"><span style="width:${pct}%"></span></div>
           </div>
           <div class="mod-check">${done === total && total ? "Done" : ""}</div>
         </a>`;
-      }).join("")}
+      }).join("") : `<div class="card"><p style="margin:0">No modules in this track yet.</p></div>`}
     </div>
   `;
+  bindDifficultySwitcher(root, () => renderLearn(root));
 }
 
 function renderLesson(root, moduleId, challengeId) {
@@ -219,6 +363,7 @@ function renderLesson(root, moduleId, challengeId) {
     <div class="btn-row" style="margin-top:10px">
       <button class="btn" id="btn-run" type="button">Run</button>
       <button class="btn btn-primary" id="btn-check" type="button">Check answer</button>
+      <button class="btn btn-danger hidden" id="btn-stop" type="button">Stop</button>
     </div>
     <div class="btn-row" style="margin-top:8px">
       <button class="btn btn-warn" id="btn-hint" type="button">Hint</button>
@@ -228,7 +373,7 @@ function renderLesson(root, moduleId, challengeId) {
     </div>
     <div id="hint-area"></div>
     <div id="ai-area"></div>
-    <div class="output empty" id="output">Output will show up here.</div>
+    ${outputTabsHtml()}
     <div class="result-list" id="results"></div>
     <div class="row space" style="margin-top:12px">
       ${idx > 0 ? `<a class="btn" href="#/lesson/${mod.id}/${challenges[idx - 1].id}">Previous</a>` : `<span></span>`}
@@ -239,6 +384,7 @@ function renderLesson(root, moduleId, challengeId) {
   editor = mountEditor(document.getElementById("editor-host"), {
     value: ch.starter || "",
   });
+  bindOutputTabs(root);
 
   const hintArea = document.getElementById("hint-area");
   const aiArea = document.getElementById("ai-area");
@@ -269,41 +415,30 @@ function renderLesson(root, moduleId, challengeId) {
 
   function showOutput(run, { checking } = {}) {
     lastRun = run;
-    if (run.error) {
-      out.className = "output err";
-      out.textContent = (run.traceback || run.error || "").trim();
-    } else if ((run.stdout || "").length) {
-      out.className = "output";
-      out.textContent = run.stdout;
-    } else {
-      out.className = "output empty";
-      out.textContent = checking ? "The program ran, but printed nothing." : "The program ran, but printed nothing.";
-    }
+    fillTextOutput(out, run, { checking });
+    showVisual(run, { focusIfVisual: !checking });
   }
 
   document.getElementById("btn-run").addEventListener("click", async () => {
-    const btn = document.getElementById("btn-run");
-    btn.disabled = true;
-    try {
-      const first = casesOf(ch)[0];
-      const run = await runStudentCode(editor.getValue(), {
-        inputs: first.inputs || [],
-        checks: [],
-        packages: ch.packages || [],
-      });
-      results.innerHTML = "";
-      showOutput(run);
-    } catch (err) {
-      out.className = "output err";
-      out.textContent = String(err);
-    } finally {
-      btn.disabled = false;
-    }
+    await withRunLock(async () => {
+      try {
+        const first = casesOf(ch)[0];
+        const run = await runStudentCode(editor.getValue(), {
+          inputs: first.inputs || [],
+          checks: [],
+          packages: ch.packages || [],
+        });
+        results.innerHTML = "";
+        showOutput(run);
+      } catch (err) {
+        out.className = "output err";
+        out.textContent = String(err);
+      }
+    });
   });
 
   document.getElementById("btn-check").addEventListener("click", async () => {
-    const btn = document.getElementById("btn-check");
-    btn.disabled = true;
+    await withRunLock(async () => {
     results.innerHTML = "";
     try {
       const code = editor.getValue();
@@ -362,9 +497,8 @@ function renderLesson(root, moduleId, challengeId) {
     } catch (err) {
       out.className = "output err";
       out.textContent = String(err);
-    } finally {
-      btn.disabled = false;
     }
+    });
   });
 
   document.getElementById("btn-hint").addEventListener("click", () => {
@@ -435,36 +569,32 @@ function renderPlayground(root) {
   const saved = localStorage.getItem("ped-thon-playground") || "print(\"Hello from Ped-thon\")\n";
   root.innerHTML = `
     <h1>Playground</h1>
-    <p class="muted">Write any Python you like. Nothing is graded here. Your last draft is saved on this device.</p>
+    <p class="muted">Write any Python you like. Nothing is graded here. Your last draft is saved on this device. Charts, turtle drawings, HTML, and games show up in the Preview tab.</p>
     <div id="editor-host"></div>
     <div class="btn-row" style="margin-top:10px">
       <button class="btn btn-primary" id="btn-run" type="button">Run</button>
+      <button class="btn btn-danger hidden" id="btn-stop" type="button">Stop</button>
       <button class="btn" id="btn-clear" type="button">Clear</button>
     </div>
-    <div class="output empty" id="output">Output will show up here.</div>
+    ${outputTabsHtml()}
   `;
   editor = mountEditor(document.getElementById("editor-host"), {
     value: saved,
     onChange: (v) => localStorage.setItem("ped-thon-playground", v),
   });
+  bindOutputTabs(root);
   const out = document.getElementById("output");
-  document.getElementById("btn-run").addEventListener("click", async (e) => {
-    e.target.disabled = true;
-    try {
-      const run = await runPlayground(editor.getValue());
-      if (run.error) {
+  document.getElementById("btn-run").addEventListener("click", async () => {
+    await withRunLock(async () => {
+      try {
+        const run = await runPlayground(editor.getValue());
+        fillTextOutput(out, run);
+        showVisual(run, { focusIfVisual: true });
+      } catch (err) {
         out.className = "output err";
-        out.textContent = (run.traceback || run.error || "").trim();
-      } else {
-        out.className = run.stdout ? "output" : "output empty";
-        out.textContent = run.stdout || "The program ran, but printed nothing.";
+        out.textContent = String(err);
       }
-    } catch (err) {
-      out.className = "output err";
-      out.textContent = String(err);
-    } finally {
-      e.target.disabled = false;
-    }
+    });
   });
   document.getElementById("btn-clear").addEventListener("click", () => {
     editor.setValue("");
@@ -474,12 +604,13 @@ function renderPlayground(root) {
 
 function renderDaily(root) {
   setNav("daily");
-  const challenge = getDailyChallenge();
-  const quiz = getDailyQuiz();
+  const challenge = getDailyChallenge(store.todayStamp(), currentDifficulty());
+  const quiz = getDailyQuiz(store.todayStamp(), 5, currentDifficulty());
   const state = store.getDaily() || {};
   root.innerHTML = `
     <h1>Daily practice</h1>
-    <p class="muted">A new coding challenge and a short quiz every day. Come back tomorrow for a different set.</p>
+    <p class="muted">A new coding challenge and a short quiz every day, matched to your difficulty track. Come back tomorrow for a different set.</p>
+    ${difficultySwitcherHtml()}
     <div class="card">
       <div class="challenge-count">Today's challenge</div>
       <h2>${escapeHtml(challenge.title)}</h2>
@@ -488,11 +619,12 @@ function renderDaily(root) {
       <div class="btn-row" style="margin-top:10px">
         <button class="btn" id="btn-run" type="button">Run</button>
         <button class="btn btn-primary" id="btn-check" type="button">Check answer</button>
+        <button class="btn btn-danger hidden" id="btn-stop" type="button">Stop</button>
         <button class="btn btn-warn" id="btn-hint" type="button">Hint</button>
         <button class="btn btn-ghost hidden" id="btn-solution" type="button">Reveal solution</button>
       </div>
       <div id="hint-area"></div>
-      <div class="output empty" id="output">Output will show up here.</div>
+      ${outputTabsHtml()}
       <div class="result-list" id="results"></div>
     </div>
     <div class="card" id="quiz-card" style="margin-top:14px">
@@ -502,6 +634,8 @@ function renderDaily(root) {
     </div>
   `;
   editor = mountEditor(document.getElementById("editor-host"), { value: challenge.starter || "" });
+  bindOutputTabs(root);
+  bindDifficultySwitcher(root, () => renderDaily(root));
   const out = document.getElementById("output");
   const results = document.getElementById("results");
   const solBtn = document.getElementById("btn-solution");
@@ -509,19 +643,16 @@ function renderDaily(root) {
   const dailyKey = `daily-${challenge.id}-${store.todayStamp()}`;
   if (store.getAttempts(dailyKey) >= 2) solBtn.classList.remove("hidden");
 
-  document.getElementById("btn-run").addEventListener("click", async (e) => {
-    e.target.disabled = true;
-    try {
+  document.getElementById("btn-run").addEventListener("click", async () => {
+    await withRunLock(async () => {
       const run = await runStudentCode(editor.getValue(), { inputs: [], checks: [], packages: challenge.packages || [] });
-      out.className = run.error ? "output err" : run.stdout ? "output" : "output empty";
-      out.textContent = run.error ? (run.traceback || run.error) : (run.stdout || "The program ran, but printed nothing.");
-    } finally {
-      e.target.disabled = false;
-    }
+      fillTextOutput(out, run);
+      showVisual(run, { focusIfVisual: true });
+    });
   });
 
-  document.getElementById("btn-check").addEventListener("click", async (e) => {
-    e.target.disabled = true;
+  document.getElementById("btn-check").addEventListener("click", async () => {
+    await withRunLock(async () => {
     try {
       const run = await runStudentCode(editor.getValue(), {
         inputs: [],
@@ -529,8 +660,8 @@ function renderDaily(root) {
         packages: challenge.packages || [],
       });
       const passed = run.passed && !run.error;
-      out.className = run.error ? "output err" : run.stdout ? "output" : "output empty";
-      out.textContent = run.error ? (run.traceback || run.error) : (run.stdout || "The program ran, but printed nothing.");
+      fillTextOutput(out, run, { checking: true });
+      showVisual(run, { focusIfVisual: false });
       results.innerHTML = (run.results || []).map((r) => `<div class="result-item ${r.ok ? "pass" : "fail"}">${r.ok ? "✓" : "✗"} ${escapeHtml(r.message)}</div>`).join("");
       if (passed) {
         if (!store.getDaily()?.challengeDone) {
@@ -548,8 +679,9 @@ function renderDaily(root) {
         if (attempts >= 2) solBtn.classList.remove("hidden");
       }
     } finally {
-      e.target.disabled = false;
+      /* withRunLock re-enables buttons */
     }
+    });
   });
 
   document.getElementById("btn-hint").addEventListener("click", () => {
@@ -609,6 +741,108 @@ function renderDaily(root) {
   }
 }
 
+
+function renderBuild(root, projectId, challengeId) {
+  setNav("learn");
+  const project = projectId ? getBuildProject(projectId) : null;
+  if (!project) {
+    root.innerHTML = `
+      <a class="back" href="#/learn">← Learn</a>
+      <h1>Build</h1>
+      <p class="muted">Visual Python projects. Run a starter, then look at the Preview tab. On a phone, games include an on-screen pad.</p>
+      <div class="build-grid">
+        ${buildProjects.map((pr) => `
+          <a class="card build-card" href="#/build/${pr.id}">
+            <div class="icon">${pr.icon || "🛠️"}</div>
+            <h3>${escapeHtml(pr.title)}</h3>
+            <p class="muted" style="margin:0">${escapeHtml(pr.blurb || "")}</p>
+          </a>
+        `).join("")}
+      </div>
+    `;
+    return;
+  }
+  const challenges = project.challenges || [];
+  const ch = (challengeId && challenges.find((c) => c.id === challengeId)) || null;
+  const code = ch ? (ch.starter || "") : (project.starter || "");
+  root.innerHTML = `
+    <a class="back" href="#/build">← All builds</a>
+    <h1>${escapeHtml(project.title)}</h1>
+    <p class="muted">${escapeHtml(project.blurb || "")}</p>
+    ${challenges.length ? `<div class="chips">
+      <a class="chip ${!ch ? "on" : ""}" href="#/build/${project.id}">Example</a>
+      ${challenges.map((c, i) => `<a class="chip ${ch && c.id === ch.id ? "on" : ""}" href="#/build/${project.id}/${c.id}">${store.isComplete(c.id) ? "✓ " : ""}Challenge ${i + 1}</a>`).join("")}
+    </div>` : ""}
+    ${ch ? `<div class="challenge-head"><div class="challenge-count">Challenge</div><h2>${escapeHtml(ch.title)}</h2><p>${escapeHtml(ch.prompt)}</p></div>` : `<p class="muted">This is a working example. Run it, then remix the code.</p>`}
+    <div id="editor-host"></div>
+    <div class="btn-row" style="margin-top:10px">
+      <button class="btn ${ch ? "" : "btn-primary"}" id="btn-run" type="button">Run</button>
+      ${ch ? `<button class="btn btn-primary" id="btn-check" type="button">Check answer</button>` : ""}
+      <button class="btn btn-danger hidden" id="btn-stop" type="button">Stop</button>
+      ${ch ? `<button class="btn btn-warn" id="btn-hint" type="button">Hint</button>
+      <button class="btn btn-ghost hidden" id="btn-solution" type="button">Reveal solution</button>` : ""}
+    </div>
+    <div id="hint-area"></div>
+    ${outputTabsHtml()}
+    <div class="result-list" id="results"></div>
+  `;
+  editor = mountEditor(document.getElementById("editor-host"), { value: code });
+  bindOutputTabs(root);
+  const out = document.getElementById("output");
+  const results = document.getElementById("results");
+  const packs = (ch && ch.packages) || project.packages || [];
+
+  document.getElementById("btn-run").addEventListener("click", async () => {
+    await withRunLock(async () => {
+      const run = await runStudentCode(editor.getValue(), { inputs: [], checks: [], packages: packs });
+      fillTextOutput(out, run);
+      showVisual(run, { focusIfVisual: true });
+    });
+  });
+
+  if (ch) {
+    const solBtn = document.getElementById("btn-solution");
+    const hintArea = document.getElementById("hint-area");
+    if (store.getAttempts(ch.id) >= 2) solBtn?.classList.remove("hidden");
+    document.getElementById("btn-check").addEventListener("click", async () => {
+      await withRunLock(async () => {
+        const run = await runStudentCode(editor.getValue(), {
+          inputs: [],
+          checks: ch.checks || [],
+          packages: packs,
+        });
+        fillTextOutput(out, run, { checking: true });
+        showVisual(run, { focusIfVisual: hasVisual(run.preview) });
+        results.innerHTML = (run.results || []).map((r) => `<div class="result-item ${r.ok ? "pass" : "fail"}">${r.ok ? "✓" : "✗"} ${escapeHtml(r.message)}</div>`).join("");
+        if (run.passed && !run.error) {
+          if (!store.isComplete(ch.id)) {
+            store.markComplete(ch.id);
+            store.addXp(ch.xp || 16);
+            refreshPills();
+            toast(`Nice work! +${ch.xp || 16} XP`);
+          } else {
+            store.touchStreak();
+            refreshPills();
+            toast("Still correct.");
+          }
+        } else {
+          const attempts = store.recordAttempt(ch.id, true);
+          if (attempts >= 2) solBtn?.classList.remove("hidden");
+        }
+      });
+    });
+    document.getElementById("btn-hint")?.addEventListener("click", () => {
+      const n = Math.min(store.recordHint(ch.id), (ch.hints || []).length);
+      hintArea.innerHTML = (ch.hints || []).slice(0, n).map((h, i) => `<div class="hint-box"><strong>Hint ${i + 1}</strong>\n${escapeHtml(h)}</div>`).join("");
+    });
+    solBtn?.addEventListener("click", () => {
+      store.markSolutionUsed(ch.id);
+      hintArea.insertAdjacentHTML("beforeend", `<div class="solution-box"><strong>Solution</strong><pre class="code">${escapeHtml(ch.solution || "")}</pre></div>`);
+      solBtn.disabled = true;
+    });
+  }
+}
+
 function renderReview(root) {
   setNav("settings");
   const open = store.getOpenMistakes();
@@ -632,6 +866,11 @@ function renderSettings(root) {
   root.innerHTML = `
     ${installBannerHtml()}
     <h1>Settings</h1>
+    <div class="card">
+      <h2>Difficulty</h2>
+      <p class="muted">This filters Learn, the daily challenge, and the quiz. You can change it any time.</p>
+      ${difficultySwitcherHtml()}
+    </div>
     <div class="card">
       <label class="field" for="set-name">What should Ped-thon call you?</label>
       <input class="input" id="set-name" type="text" maxlength="40" placeholder="Your name" value="${escapeAttr(s.name || "")}" />
@@ -657,6 +896,7 @@ function renderSettings(root) {
     </div>
   `;
   bindInstall();
+  bindDifficultySwitcher(root, () => renderSettings(root));
   document.getElementById("btn-save").addEventListener("click", () => {
     store.saveSettings({
       name: document.getElementById("set-name").value.trim(),
@@ -684,6 +924,7 @@ function escapeAttr(s) {
 
 function render() {
   refreshPills();
+  stopActiveGame();
   const raw = (location.hash || "#/").replace(/^#/, "");
   const parts = raw.split("/").filter(Boolean);
   const root = parts[0] || "home";
@@ -693,6 +934,7 @@ function render() {
   else if (root === "lesson") renderLesson(host, parts[1], parts[2]);
   else if (root === "daily") renderDaily(host);
   else if (root === "playground") renderPlayground(host);
+  else if (root === "build") renderBuild(host, parts[1], parts[2]);
   else if (root === "settings") renderSettings(host);
   else if (root === "review") renderReview(host);
   else renderHome(host);
@@ -713,9 +955,52 @@ window.addEventListener("appinstalled", () => {
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
+    registerServiceWorker();
   });
 }
+
+function showUpdateBanner(waiting) {
+  const bar = document.getElementById("update-banner");
+  const btn = document.getElementById("btn-update-reload");
+  if (!bar || !btn) return;
+  bar.hidden = false;
+  btn.onclick = () => {
+    window.__pedthonReloading = true;
+    if (waiting) waiting.postMessage("SKIP_WAITING");
+    else navigator.serviceWorker.controller?.postMessage("SKIP_WAITING");
+    setTimeout(() => location.reload(), 400);
+  };
+}
+
+async function registerServiceWorker() {
+  try {
+    const reg = await navigator.serviceWorker.register("./sw.js");
+    if (reg.waiting) showUpdateBanner(reg.waiting);
+    reg.addEventListener("updatefound", () => {
+      const sw = reg.installing;
+      sw?.addEventListener("statechange", () => {
+        if (sw.state === "installed" && navigator.serviceWorker.controller) {
+          showUpdateBanner(reg.waiting || sw);
+        }
+      });
+    });
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (window.__pedthonReloading) location.reload();
+    });
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      if (event.data?.type === "SW_ACTIVATED" && event.data.cache && event.data.cache !== "ped-thon-v1") {
+        /* new worker has taken over */
+      }
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+const retryBtn = document.getElementById("btn-retry-python");
+retryBtn?.addEventListener("click", () => {
+  retryPython().then(() => initJedi().catch(() => {})).catch(() => {});
+});
 
 onPythonStatus((state, message) => {
   const box = document.getElementById("python-status");
@@ -725,12 +1010,15 @@ onPythonStatus((state, message) => {
   if (state === "ready") {
     box.classList.remove("error");
     box.classList.add("visible");
+    retryBtn?.classList.add("hidden");
     setTimeout(() => box.classList.remove("visible"), 900);
   } else if (state === "error") {
     box.classList.add("visible", "error");
+    retryBtn?.classList.remove("hidden");
   } else {
     box.classList.add("visible");
     box.classList.remove("error");
+    retryBtn?.classList.add("hidden");
   }
 });
 

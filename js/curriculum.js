@@ -1,9 +1,12 @@
-export const modules = [
+import { advancedModules } from "./advanced.js";
+
+const coreModules = [
   {
     id: "hello",
     title: "Hello, Python",
     subtitle: "Print text and comments",
     icon: "👋",
+    level: "beginner",
     lesson: {
       title: "Talking to the screen",
       html: `<p>Python runs your instructions from top to bottom. The simplest useful one is <code>print()</code>, which shows text in the output.</p>
@@ -86,6 +89,7 @@ print(20)</pre>
     title: "Variables & Types",
     subtitle: "Names, numbers, and True/False",
     icon: "📦",
+    level: "beginner",
     lesson: {
       title: "Boxes with names",
       html: `<p>A <strong>variable</strong> is a name that holds a value. You create one with <code>=</code>.</p>
@@ -184,6 +188,7 @@ print(type(age))</pre>`,
     title: "Strings",
     subtitle: "Text, slices, and f-strings",
     icon: "🔤",
+    level: "beginner",
     lesson: {
       title: "Working with text",
       html: `<p>A <strong>string</strong> is text. You can join strings with <code>+</code>, repeat them with <code>*</code>, and take pieces with <strong>slices</strong>.</p>
@@ -271,6 +276,7 @@ print(f"Hello, {name}!")</pre>`,
     title: "Input & Decisions",
     subtitle: "Ask questions and use if/else",
     icon: "🤔",
+    level: "beginner",
     lesson: {
       title: "Listening and choosing",
       html: `<p><code>input()</code> asks the user for text and returns a string. If you need a number, convert it with <code>int()</code> or <code>float()</code>.</p>
@@ -362,6 +368,7 @@ else:
     title: "Loops",
     subtitle: "for, range, and while",
     icon: "🔁",
+    level: "beginner",
     lesson: {
       title: "Doing things again",
       html: `<p>A <code>for</code> loop walks through a sequence. <code>range(n)</code> gives 0 up to, but not including, n. <code>range(1, 6)</code> gives 1, 2, 3, 4, 5.</p>
@@ -451,6 +458,7 @@ print(total)</pre>
     title: "Lists",
     subtitle: "Collections you can change",
     icon: "📋",
+    level: "beginner",
     lesson: {
       title: "A row of values",
       html: `<p>A <strong>list</strong> holds several values in order, inside square brackets.</p>
@@ -539,6 +547,7 @@ print(sum(scores) / len(scores))</pre>`,
     title: "Dicts, Tuples & Sets",
     subtitle: "Keys, packed values, and unique items",
     icon: "🗂️",
+    level: "intermediate",
     lesson: {
       title: "Three more containers",
       html: `<p>A <strong>dictionary</strong> maps keys to values:</p>
@@ -627,6 +636,7 @@ print(unique)  # {1, 2, 3}</pre>`,
     title: "Functions",
     subtitle: "Reusable blocks of code",
     icon: "🧩",
+    level: "intermediate",
     lesson: {
       title: "Give a task a name",
       html: `<p>A <strong>function</strong> is a reusable block of code. You define it with <code>def</code>, and send a result back with <code>return</code>.</p>
@@ -714,6 +724,7 @@ print(square(5))  # 25</pre>
     title: "Errors & Files",
     subtitle: "try/except and reading files",
     icon: "🛠️",
+    level: "intermediate",
     lesson: {
       title: "When things go wrong — and saving work",
       html: `<p>Some operations can fail, like turning a word into an integer. Wrap risky code in <code>try</code> / <code>except</code> so the program can recover.</p>
@@ -808,6 +819,7 @@ print(content)</pre>
     title: "List Comprehensions",
     subtitle: "Build lists in one line",
     icon: "✨",
+    level: "intermediate",
     lesson: {
       title: "A shorter way to build lists",
       html: `<p>A <strong>list comprehension</strong> builds a new list from an existing sequence, in one line.</p>
@@ -896,6 +908,7 @@ print([w.upper() for w in words])  # ['ADA', 'KOJO']</pre>`,
     title: "OOP Basics",
     subtitle: "Classes, objects, and methods",
     icon: "🏫",
+    level: "intermediate",
     lesson: {
       title: "Your own types",
       html: `<p>A <strong>class</strong> is a blueprint for making objects. <code>__init__</code> runs when you create one, and sets up its data (the <strong>attributes</strong>).</p>
@@ -982,6 +995,7 @@ print(buddy.bark())    # Woof</pre>
     title: "NumPy & Pandas",
     subtitle: "Arrays and tables for data work",
     icon: "📊",
+    level: "intermediate",
     lesson: {
       title: "The tools data scientists reach for",
       html: `<p>These challenges load two popular libraries inside Ped-thon. The first time may take a little longer.</p>
@@ -1092,6 +1106,8 @@ print(df["score"].mean())</pre>`,
   },
 ];
 
+export const modules = [...coreModules, ...advancedModules];
+
 export function getModule(id) {
   return modules.find((m) => m.id === id);
 }
@@ -1106,7 +1122,7 @@ export function allChallenges() {
   const out = [];
   for (const mod of modules) {
     for (const ch of mod.challenges || []) {
-      out.push({ ...ch, moduleId: mod.id, moduleTitle: mod.title });
+      out.push({ ...ch, moduleId: mod.id, moduleTitle: mod.title, level: mod.level || "beginner" });
     }
   }
   return out;
